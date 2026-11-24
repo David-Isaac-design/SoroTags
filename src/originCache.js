@@ -1,56 +1,84 @@
 'use strict';
 
-const DEFAULT_TTL_MS = 300000;
+const DEFAULT_TTL_MS = 5 * 60 * 1000;
+const MAX_ENTRIES = 1000;
 
 function resolveTtlMs() {
   const raw = process.env.ORIGIN_CACHE_TTL_MS;
-  if (raw === undefined || raw === null || raw === '') {
-    return DEFAULT_TTL_MS;
-  }
+  if (raw === undefined || raw === '') return DEFAULT_TTL_MS;
   const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    return DEFAULT_TTL_MS;
-  }
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_TTL_MS;
   return parsed;
 }
 
-let cachedOrigins = null;
-let cachedAt = 0;
+// Map preserves insertion order, which we use as the LRU ordering:
+// the first key is the least-recently-used entry.
+const cache = new Map();
 
-function isExpired(now) {
-  if (cachedOrigins === null) {
-    return true;
-  }
-  return now - cachedAt >= resolveTtlMs();
+function isExpired(entry, now) {
+  return entry.expiresAt <= now;
 }
 
-async function loadOrigins(db) {
-  const rows = await db.query('SELECT origin FROM approved_origins');
-  return rows.map((row) => row.origin);
-}
-
-async function getApprovedOrigins(db) {
+function get(origin) {
+  const entry = cache.get(origin);
+  if (!entry) return undefined;
   const now = Date.now();
-  if (isExpired(now)) {
-    cachedOrigins = await loadOrigins(db);
-    cachedAt = now;
+  if (isExpired(entry, now)) {
+    cache.delete(origin);
+    return undefined;
   }
-  return cachedOrigins;
+  // Refresh LRU position on access.
+  cache.delete(origin);
+  cache.set(origin, entry);
+  return entry.value;
 }
 
-function invalidateOriginCache() {
-  cachedOrigins = null;
-  cachedAt = 0;
+function set(origin, value) {
+  const now = Date.now();
+  const ttlMs = resolveTtlMs();
+  // Remove any existing entry so the new one is treated as most-recently-used.
+  cache.delete(origin);
+  cache.set(origin, { value, expiresAt: now + ttlMs });
+  evict(now);
 }
 
-async function isOriginApproved(db, origin) {
-  const origins = await getApprovedOrigins(db);
-  return origins.includes(origin);
+function evict(now) {
+  // Drop expired entries first.
+  for (const [key, entry] of cache) {
+    if (isExpired(entry, now)) {
+      cache.delete(key);
+    }
+  }
+  // Enforce the max size by evicting least-recently-used entries.
+  while (cache.size > MAX_ENTRIES) {
+    const oldestKey = cache.keys().next().value;
+    cache.delete(oldestKey);
+  }
+}
+
+function has(origin) {
+  return get(origin) !== undefined;
+}
+
+function deleteEntry(origin) {
+  return cache.delete(origin);
+}
+
+function clear() {
+  cache.clear();
+}
+
+function size() {
+  return cache.size;
 }
 
 module.exports = {
   DEFAULT_TTL_MS,
-  getApprovedOrigins,
-  invalidateOriginCache,
-  isOriginApproved,
+  MAX_ENTRIES,
+  get,
+  set,
+  has,
+  delete: deleteEntry,
+  clear,
+  size,
 };
