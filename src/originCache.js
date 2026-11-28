@@ -11,12 +11,20 @@ function resolveTtlMs() {
   return parsed;
 }
 
-// Map preserves insertion order, which we use as the LRU ordering:
+// Map preserves insertion order, which we use as the LRU order:
 // the first key is the least-recently-used entry.
 const cache = new Map();
 
 function isExpired(entry, now) {
-  return entry.expiresAt <= now;
+  return now - entry.cachedAt >= entry.ttlMs;
+}
+
+function evictExpired(now) {
+  for (const [origin, entry] of cache) {
+    if (isExpired(entry, now)) {
+      cache.delete(origin);
+    }
+  }
 }
 
 function get(origin) {
@@ -36,24 +44,20 @@ function get(origin) {
 function set(origin, value) {
   const now = Date.now();
   const ttlMs = resolveTtlMs();
-  // Remove any existing entry so the new one is treated as most-recently-used.
-  cache.delete(origin);
-  cache.set(origin, { value, expiresAt: now + ttlMs });
-  evict(now);
-}
 
-function evict(now) {
-  // Drop expired entries first.
-  for (const [key, entry] of cache) {
-    if (isExpired(entry, now)) {
-      cache.delete(key);
-    }
-  }
-  // Enforce the max size by evicting least-recently-used entries.
-  while (cache.size > MAX_ENTRIES) {
+  // Remove any existing entry so the new one lands at the MRU position.
+  cache.delete(origin);
+
+  evictExpired(now);
+
+  while (cache.size >= MAX_ENTRIES) {
     const oldestKey = cache.keys().next().value;
+    if (oldestKey === undefined) break;
     cache.delete(oldestKey);
   }
+
+  cache.set(origin, { value, cachedAt: now, ttlMs });
+  return value;
 }
 
 function has(origin) {

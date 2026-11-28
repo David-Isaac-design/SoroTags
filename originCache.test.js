@@ -3,11 +3,11 @@
 const { test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert');
 
-const MODULE_PATH = require.resolve('./originCache');
+const MODULE_PATH = require.resolve('./src/originCache');
 
 function loadFresh() {
   delete require.cache[MODULE_PATH];
-  return require('./originCache');
+  return require('./src/originCache');
 }
 
 let originalTtl;
